@@ -39,8 +39,8 @@ pub use loaders::{
     MistralLoader, MixtralLoader, ModelKind, ModelPaths, NormalLoaderType, NormalLoadingMetadata,
     NormalModel, NormalModelLoader, Phi2Loader, Phi3Loader, Phi3VLoader, Phi3_5MoELoader,
     Phi4MMLoader, PrettyName, QuantizationKind, Qwen2Loader, Qwen2VLLoader, Qwen2_5VLLoader,
-    Starcoder2Loader, TokenSource, VLlama4Loader, VLlamaLoader, VisionLoaderType, VisionModel,
-    VisionModelLoader,
+    Qwen3Loader, Qwen3MoELoader, Starcoder2Loader, TokenSource, VLlama4Loader, VLlamaLoader,
+    VisionLoaderType, VisionModel, VisionModelLoader,
 };
 use mistralrs_quant::IsqType;
 pub use normal::{NormalLoader, NormalLoaderBuilder, NormalSpecificConfig};
@@ -236,10 +236,10 @@ impl PartialEq for ModelCategory {
     }
 }
 
-/// Prepend a vision tag appropriate for the model to the prompt. Image indexing is assumed that start at
+/// Prepend a vision tag appropriate for the model to the prompt. Image indexing is assumed that start at 0.
 pub trait VisionPromptPrefixer: Send + Sync {
     /// Prefix for inclusion in messages (may do nothing if the chat template handles it).
-    fn prefix_image(&self, image_index: usize, prompt: &str) -> String;
+    fn prefix_image(&self, image_indees: Vec<usize>, prompt: &str) -> String;
 }
 
 pub enum CacheBackendMetadata<'a> {
@@ -692,6 +692,7 @@ mod tests {
                     inputs.clone()
                 },
                 true,
+                None,
                 &ChatTemplateValue(Either::Left(template.to_string())),
                 Some(bos.to_string()),
                 Some(eos.to_string()),

@@ -91,7 +91,11 @@ impl Engine {
                             }
                         };
 
-                        let RequestMessage::Chat(messages) = &mut second_request.messages else {
+                        let RequestMessage::Chat {
+                            messages,
+                            enable_thinking: _,
+                        } = &mut second_request.messages
+                        else {
                             unreachable!()
                         };
 
@@ -221,7 +225,7 @@ impl Engine {
     async fn add_request(&self, request: NormalRequest) {
         let is_chat = matches!(
             request.messages,
-            RequestMessage::Chat(_) | RequestMessage::VisionChat { .. }
+            RequestMessage::Chat { .. } | RequestMessage::VisionChat { .. }
         );
         let echo_prompt = matches!(
             request.messages,
@@ -233,7 +237,7 @@ impl Engine {
 
         let best_of = match request.messages {
             RequestMessage::Completion { best_of, .. } => best_of,
-            RequestMessage::Chat(_)
+            RequestMessage::Chat { .. }
             | RequestMessage::CompletionTokens(_)
             | RequestMessage::VisionChat { .. }
             | RequestMessage::ImageGeneration { .. } => None,
@@ -256,6 +260,7 @@ impl Engine {
             RequestMessage::VisionChat {
                 ref images,
                 messages: _,
+                enable_thinking: _,
             } => Some(images.clone()),
             _ => None,
         };
@@ -283,16 +288,25 @@ impl Engine {
         };
 
         let (mut prompt_tokens, prompt_text) = match request.messages {
-            RequestMessage::Chat(messages)
+            RequestMessage::Chat {
+                messages,
+                enable_thinking,
+            }
             | RequestMessage::VisionChat {
                 images: _,
                 messages,
+                enable_thinking,
             } => {
                 let pipeline = &*get_mut_arcmutex!(self.pipeline);
                 let tools = request.tools.unwrap_or_default();
-                let template = pipeline
-                    .get_processor()
-                    .process(pipeline, messages, true, true, tools);
+                let template = pipeline.get_processor().process(
+                    pipeline,
+                    messages,
+                    true,
+                    true,
+                    enable_thinking,
+                    tools,
+                );
                 handle_seq_error!(template, request.response)
             }
             RequestMessage::Completion { text, .. } => {
@@ -370,13 +384,6 @@ impl Engine {
                 warn!("Prompt for request {} was {} tokens over the model maximum length. The last {} tokens were truncated to make space for generation.", request.id, currently_over, prompt_len - prompt_tokens.len());
             }
         }
-        let prefill_cache = handle_seq_error!(
-            get_mut_arcmutex!(self.prefix_cacher).search_for_matching_cache(
-                &prompt_tokens,
-                images.as_ref().is_some_and(|x| !x.is_empty())
-            ),
-            request.response
-        );
 
         let topk = request
             .sampling_params
@@ -632,18 +639,8 @@ impl Engine {
                 request.return_raw_logits,
                 eos_toks,
             );
-            self.logger.add_new_sequence();
-            seq = if let Some(prefill_cache) = prefill_cache.clone() {
-                self.logger.add_prefix_cache_hit();
 
-                seq.prefill_v2(
-                    prefill_cache.normal,
-                    prefill_cache.toks,
-                    prefill_cache.offset,
-                )
-            } else {
-                seq
-            };
+            self.logger.add_new_sequence();
 
             // Run the inputs processor to update the prompt for multimodal models.
             if images.is_some() {
@@ -664,6 +661,27 @@ impl Engine {
                 );
             }
 
+            let prefill_cache = handle_seq_error!(
+                get_mut_arcmutex!(self.prefix_cacher).search_for_matching_cache(
+                    seq.get_toks(),
+                    seq.image_hashes(),
+                    images.as_ref().is_some_and(|x| !x.is_empty())
+                ),
+                request.response
+            );
+            seq = if let Some(prefill_cache) = prefill_cache.clone() {
+                self.logger.add_prefix_cache_hit();
+
+                seq.keep_num_images(prefill_cache.images_to_keep);
+                seq.prefill_v2(
+                    prefill_cache.normal,
+                    prefill_cache.toks,
+                    prefill_cache.offset,
+                )
+            } else {
+                seq
+            };
+
             *get_mut_arcmutex!(self.id) += 1;
             get_mut_arcmutex!(self.scheduler).add_seq(seq);
         }
@@ -679,6 +697,7 @@ impl Engine {
                     messages,
                     request.add_generation_prompt,
                     request.add_special_tokens,
+                    request.enable_thinking,
                     tools,
                 );
                 let toks = match template {
